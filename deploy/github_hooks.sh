@@ -29,7 +29,9 @@ PY
 while read -r REPO ROUTE PROFILE BASE HOST KEY; do
   SECRET=$(ssh -n -i "$KEY" -o BatchMode=yes "$HOST" \
     "python3 -c \"import yaml;print(yaml.safe_load(open('/root/.hermes/config.yaml'))['platforms']['webhook']['extra']['routes']['$ROUTE']['secret'])\"")
-  URL="$BASE$([[ $PROFILE != - ]] && echo "/p/$PROFILE")/webhooks/$ROUTE"
+  # if/else, not `[[ ]] && echo`: a false test makes the substitution exit 1 and set -e aborts silently
+  PREFIX=""; if [[ $PROFILE != - ]]; then PREFIX="/p/$PROFILE"; fi
+  URL="$BASE$PREFIX/webhooks/$ROUTE"
 
   for id in $(gh api "repos/$REPO/hooks" </dev/null --jq ".[] | select(.config.url|test(\"/webhooks/$ROUTE\$\")) | .id"); do
     gh api -X DELETE "repos/$REPO/hooks/$id" </dev/null && echo "$REPO: replaced old hook $id"
