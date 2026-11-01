@@ -124,7 +124,7 @@ Haiku is fast and consistent but has no repo access, so it can't be trusted to d
    ```bash
    cp config.example.json config.json
    ```
-   - `bot_login`, `bot_name`, `owner_login`. For a GitHub App, `bot_login` is `<app-slug>[bot]`; people still type `@<app-slug>` to wake it (override with `mention`).
+   - `bot_login`, `bot_name`, `owner_login`. For a GitHub App, `bot_login` is `<app-slug>[bot]`; people type `@<app-slug>` to wake it. `mention` adds a shorter handle; the real login keeps working.
    - `app` (GitHub App only): `dir` holds the app's key on the Hermes host, `push` lists `user@host:/path` targets that get a fresh token copy (your terminal backend, at `agent_token_path`)
    - `hermes`: ssh host and key for the Hermes host, and the public webhook base URL
    - `gate.token_file`: where the bot token lives **on the Hermes host**
@@ -132,11 +132,17 @@ Haiku is fast and consistent but has no repo access, so it can't be trusted to d
    - `routes`: one per Hermes profile you want. `profile: null` is the default profile. `opus_subagent: true` adds the delegation toolset; also set `delegation.model` in that profile's Hermes config.
    - `repos`: which repo goes to which route
 2. Get a bot token:
-   - **GitHub App:** on the Hermes host, run the one-click setup, open the printed link in a browser signed in to GitHub, click **Create GitHub App**, then pick your repos:
+   - **GitHub App:** copy the setup script to the Hermes host and run it behind an ssh tunnel, so the one-time code GitHub puts in the redirect never crosses the network in cleartext (anyone holding that code can fetch the app's private key):
      ```bash
-     python3 deploy/app_setup.py --name your-bot --public-url http://your-hermes-host:8645 --app-dir /root/.config/gh-app
+     scp deploy/app_setup.py root@your-hermes-host:/tmp/
+     ssh -L 8645:localhost:8645 root@your-hermes-host \
+       python3 /tmp/app_setup.py --name your-bot --public-url http://localhost:8645 --app-dir /root/.config/gh-app
      ```
-     The private key goes straight from GitHub to the host. `install.sh` then adds a systemd timer that mints a new installation token every 30 minutes and pushes it to `agent_token_path`. Apps can't be assigned issues or requested as reviewers, so wake them by mention.
+     Open the printed link in a browser signed in to GitHub, click **Create GitHub App**, then pick your repos. The private key goes straight from GitHub to the host, and the server exits when the app is installed (or after 15 minutes). Can't tunnel, e.g. on a phone? Add `--bind 0.0.0.0` and use `--public-url http://your-hermes-host:8645`, and finish the flow right away.
+
+     `install.sh` then adds a systemd timer that mints a new installation token every 30 minutes (retrying every minute on failure) and copies it to each `app.push` target. Push targets need absolute paths, and root on the Hermes host needs an ssh key authorized on each target plus a `known_hosts` entry: run `ssh-copy-id you@target` and one manual `ssh you@target true` from the Hermes host first.
+
+     Apps can't be assigned issues or requested as reviewers, so wake them by mention. Install the app on every repo in `repos`, or its token gets 403 there.
    - **Bot account:** put its token in both places and lock it down (`chmod 600`).
 3. Ship it and restart the gateway once:
    ```bash

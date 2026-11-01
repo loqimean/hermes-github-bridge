@@ -4,6 +4,7 @@
 #   deploy/install.sh            # gate script + gate config only: live immediately, no restart
 #   deploy/install.sh --routes   # also rewrite routes in Hermes config.yaml: needs a gateway restart
 #
+# With an "app" section in config.json it also installs the GitHub App token minter and its systemd timer.
 # CONFIG=path/to/config.json overrides the default ./config.json.
 # This never restarts the gateway: doing that from inside a Hermes session kills the session.
 set -euo pipefail
@@ -12,7 +13,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CONFIG="${CONFIG:-$ROOT/config.json}"
 [[ -f "$CONFIG" ]] || { echo "No $CONFIG. Copy config.example.json to config.json and fill it in." >&2; exit 1; }
 
-read_cfg() { python3 -c "import json,os,sys;c=json.load(open('$CONFIG'));v=eval(sys.argv[1]);print(os.path.expanduser(v) if isinstance(v,str) else v)" "$1"; }
+# read_cfg expands ~ (local paths like the ssh key); read_raw doesn't (paths on the remote host)
+read_cfg() { python3 -c "import json,os,sys;c=json.load(open(sys.argv[2]));v=eval(sys.argv[1]);print(os.path.expanduser(v) if isinstance(v,str) else v)" "$1" "$CONFIG"; }
+read_raw() { python3 -c "import json,sys;c=json.load(open(sys.argv[2]));print(eval(sys.argv[1]))" "$1" "$CONFIG"; }
 HOST="$(read_cfg 'c["hermes"]["ssh_host"]')"
 KEY="$(read_cfg 'c["hermes"]["ssh_key"]')"
 PROFILES="$(read_cfg '" ".join(sorted({r["profile"] for r in c["routes"].values() if r.get("profile")}))')"
@@ -32,49 +35,6 @@ json.dump(gate, open(sys.argv[2], "w"), indent=2)
 PY
 
 scp -q -i "$KEY" "$ROOT/gate/hermes_github_gate.py" "$TMP/hermes_github_gate.json" "$ROOT/deploy/routes.py" "$CONFIG" "$HOST:/tmp/"
-
-# GitHub App mode: install the token minter and a systemd timer that refreshes the token every 30 minutes
-APP_DIR="$(read_cfg 'c.get("app", {}).get("dir", "")')"
-if [[ -n "$APP_DIR" ]]; then
-  TOKEN_FILE="$(read_cfg 'c["gate"]["token_file"]')"
-  # ssh joins remote args with spaces, so pass each push target as its own word (targets contain no spaces)
-  PUSH_TARGETS="$(read_cfg '" ".join(c["app"].get("push", []))')"
-  scp -q -i "$KEY" "$ROOT/deploy/app_token.py" "$HOST:/tmp/app_token.py"
-  "${SSH[@]}" bash -s -- "$APP_DIR" "$TOKEN_FILE" $PUSH_TARGETS <<'REMOTE'
-set -euo pipefail
-APP_DIR="$1"; TOKEN_FILE="$2"; shift 2
-PUSH=""
-for t in "$@"; do PUSH="$PUSH --push $t"; done
-install -d -m700 "$APP_DIR"
-install -m700 /tmp/app_token.py "$APP_DIR/app_token.py"
-cat > /etc/systemd/system/github-app-token.service <<UNIT
-[Unit]
-Description=Refresh the GitHub App installation token for the webhook bridge
-After=network-online.target
-[Service]
-Type=oneshot
-ExecStart=/usr/bin/python3 $APP_DIR/app_token.py --app-dir $APP_DIR --out $TOKEN_FILE $PUSH
-UNIT
-cat > /etc/systemd/system/github-app-token.timer <<UNIT
-[Unit]
-Description=Refresh the GitHub App installation token every 30 minutes
-[Timer]
-OnBootSec=1min
-OnUnitActiveSec=30min
-Persistent=true
-[Install]
-WantedBy=timers.target
-UNIT
-systemctl daemon-reload
-if [[ -f "$APP_DIR/app.json" && -f "$APP_DIR/app.pem" ]]; then
-  systemctl enable --now github-app-token.timer >/dev/null
-  systemctl start github-app-token.service
-  echo "app token timer enabled, token refreshed"
-else
-  echo "app token timer installed but not enabled: run deploy/app_setup.py first"
-fi
-REMOTE
-fi
 "${SSH[@]}" bash -s -- $PROFILES <<'REMOTE'
 set -euo pipefail
 S=/root/.hermes/scripts
@@ -89,6 +49,68 @@ for p in "$@"; do
 done
 echo "gate installed for default profile${*:+ and: $*}"
 REMOTE
+
+# GitHub App mode: token minter + a timer that refreshes the token every 30 minutes (tokens live 60).
+# Runs after the gate deploy, and a failed first refresh only warns, so a push problem never blocks gate deploys.
+if [[ "$(read_raw 'bool(c.get("app", {}).get("dir"))')" == "True" ]]; then
+  APP_DIR="$(read_raw 'c["app"]["dir"]')"
+  # unit files are rendered here with systemd quoting, so no config value is ever re-parsed by a remote shell
+  python3 - "$CONFIG" "$TMP" <<'PY'
+import json, sys
+c, out = json.load(open(sys.argv[1])), sys.argv[2]
+app_dir = c["app"]["dir"]
+token_file = c.get("gate", {}).get("token_file", "/root/.config/gh-bot/token")
+for t in c["app"].get("push", []):
+    host, _, path = t.partition(":")
+    if not host or host.startswith("-") or not path.startswith("/"):
+        sys.exit(f"app.push target {t!r} must look like user@host:/absolute/path")
+def q(s):  # systemd ExecStart quoting: escape \ " % $
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%").replace("$", "$$") + '"'
+args = ["/usr/bin/python3", f"{app_dir}/app_token.py", "--app-dir", app_dir, "--out", token_file]
+for t in c["app"].get("push", []):
+    args += ["--push", t]
+open(f"{out}/github-app-token.service", "w").write(f"""[Unit]
+Description=Refresh the GitHub App installation token for the webhook bridge
+Wants=network-online.target
+After=network-online.target
+[Service]
+Type=oneshot
+TimeoutStartSec=3min
+Restart=on-failure
+RestartSec=60
+ExecStart={' '.join(q(a) for a in args)}
+""")
+open(f"{out}/github-app-token.timer", "w").write("""[Unit]
+Description=Refresh the GitHub App installation token every 30 minutes
+[Timer]
+OnBootSec=10s
+OnUnitActiveSec=30min
+[Install]
+WantedBy=timers.target
+""")
+open(f"{out}/app_dir", "w").write(app_dir)
+PY
+  scp -q -i "$KEY" "$ROOT/deploy/app_token.py" "$TMP/github-app-token.service" "$TMP/github-app-token.timer" \
+    "$TMP/app_dir" "$HOST:/tmp/"
+  "${SSH[@]}" bash -s <<'REMOTE'
+set -euo pipefail
+APP_DIR="$(cat /tmp/app_dir)"
+install -d -m700 "$APP_DIR"
+install -m700 /tmp/app_token.py "$APP_DIR/app_token.py"
+install -m644 /tmp/github-app-token.service /tmp/github-app-token.timer /etc/systemd/system/
+systemctl daemon-reload
+if [[ -f "$APP_DIR/app.json" && -f "$APP_DIR/app.pem" ]]; then
+  systemctl enable --now github-app-token.timer >/dev/null
+  if systemctl start github-app-token.service; then
+    echo "app token timer enabled, token refreshed"
+  else
+    echo "WARNING: token refresh failed (it retries every 60s). See: journalctl -u github-app-token.service" >&2
+  fi
+else
+  echo "app token timer installed but not enabled: run deploy/app_setup.py first"
+fi
+REMOTE
+fi
 
 if [[ "${1:-}" == "--routes" ]]; then
   "${SSH[@]}" "cd /root/.hermes && python3 /tmp/routes.py /tmp/$(basename "$CONFIG") && hermes config check >/dev/null && echo 'config check OK'"

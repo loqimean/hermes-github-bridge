@@ -40,13 +40,15 @@ CFG = {**DEFAULTS, **(json.loads(CONFIG_FILE.read_text()) if CONFIG_FILE.exists(
 
 BOT = CFG["bot_login"] or ""
 HANDLE = CFG["mention"] or BOT.removesuffix("[bot]")
+# both the configured handle and the bot's real login (as GitHub shows it) wake the bot
+_HANDLES = "|".join(re.escape(h) for h in dict.fromkeys(h for h in (HANDLE, BOT.removesuffix("[bot]")) if h))
 OWNER = CFG["owner_login"] or ""
 NAME = CFG["bot_name"]
 TOKEN_FILE = CFG["token_file"]
 HERMES_ENV = CFG["hermes_env"]
 ROUTER_LOG = CFG["router_log"]
-MENTION = (re.compile(rf"(?<![\w-])@{re.escape(HANDLE)}(?:\[bot\])?(?![\w-])|(?<![\w/])/hermes\b", re.IGNORECASE)
-           if HANDLE else re.compile(r"(?!x)x"))
+MENTION = (re.compile(rf"(?<![\w-])@(?:{_HANDLES})(?:\[bot\])?(?![\w-])|(?<![\w/])/hermes\b", re.IGNORECASE)
+           if _HANDLES else re.compile(r"(?!x)x"))
 ACK_REACTIONS = ("heart", "+1", "hooray")
 
 
@@ -269,7 +271,7 @@ def log_route(ctx: dict, r: dict, dt: float):
         pass
 
 
-OTHER_MENTION = re.compile(rf"(?<![\w-])@(?!{re.escape(HANDLE)}(?![\w-]))[A-Za-z0-9][A-Za-z0-9-]*")
+OTHER_MENTION = re.compile(rf"(?<![\w-])@(?!(?:{_HANDLES or '(?!x)x'})(?![\w-]))[A-Za-z0-9][A-Za-z0-9-]*", re.IGNORECASE)
 
 
 def addressed_elsewhere(text: str) -> bool:
