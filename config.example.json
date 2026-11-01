@@ -1,5 +1,5 @@
 {
-  "bot_login": "your-bot-account",
+  "bot_login": "your-app-slug[bot]",
   "bot_name": "Hermes",
   "owner_login": "your-github-login",
 
@@ -18,6 +18,11 @@
   },
 
   "agent_token_path": "/home/you/.config/gh-bot/token",
+
+  "app": {
+    "dir": "/root/.config/gh-app",
+    "push": ["you@your-terminal-backend:/home/you/.config/gh-bot/token"]
+  },
 
   "routes": {
     "github": { "profile": null, "opus_subagent": false },

@@ -103,6 +103,8 @@ Haiku is fast and consistent but has no repo access, so it can't be trusted to d
 | [`gate/hermes_github_gate.py`](gate/hermes_github_gate.py) | Hermes webhook route `script:`. Filters, reacts, fetches the thread, calls Haiku and Jev, posts instant replies, hands the rest to the agent. Stdlib only. | Hermes host, per request (changes are live immediately) |
 | [`deploy/routes.py`](deploy/routes.py) | Writes the webhook routes (prompt, toolsets, profile) into Hermes `config.yaml`. Idempotent, keeps secrets, makes a backup. | Hermes host (needs a gateway restart) |
 | [`deploy/install.sh`](deploy/install.sh) | Ships the gate, its config, and optionally the routes to the Hermes host. | Your machine |
+| [`deploy/app_setup.py`](deploy/app_setup.py) | One-click GitHub App creation (manifest flow) and install. Stdlib only. | Hermes host, once |
+| [`deploy/app_token.py`](deploy/app_token.py) | Mints the app's installation token and copies it to the agent host. Run by a systemd timer. | Hermes host, every 30 minutes |
 | [`deploy/github_hooks.sh`](deploy/github_hooks.sh) | Creates the GitHub webhooks for the repos in your config. | Your machine |
 | [`config.example.json`](config.example.json) | Everything deployment-specific: bot, owner, host, routes, repos. | Copy to `config.json` (git-ignored) |
 | [`tests/`](tests) | Offline tests, all network calls faked. | Anywhere |
@@ -113,7 +115,7 @@ Haiku is fast and consistent but has no repo access, so it can't be trusted to d
 
 - A running [Hermes Agent](https://hermes-agent.nousresearch.com/docs) gateway with the [webhook platform](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/webhooks) enabled, reachable from GitHub.
 - `gh` and `git` on the Hermes terminal backend, logged in as **you** (commits and PRs stay under your name).
-- A second GitHub account for the bot, added as a collaborator with write access on each repo. Give it a classic token with `repo` and `read:org`.
+- A bot identity on GitHub. Use a **GitHub App** (recommended): it posts as `<app-slug>[bot]`, needs no second account, and its tokens expire every hour. A second user account with a classic token (`repo`, `read:org`) also works, but GitHub's terms allow only one free machine account per person, and new bot accounts that only talk through the API from a server can get flagged and suspended.
 - An [OpenRouter](https://openrouter.ai) key as `OPENROUTER_API_KEY` in the Hermes `.env`. Instant replies cost about $0.001 each.
 
 ### Steps
@@ -122,13 +124,20 @@ Haiku is fast and consistent but has no repo access, so it can't be trusted to d
    ```bash
    cp config.example.json config.json
    ```
-   - `bot_login`, `bot_name`, `owner_login`
+   - `bot_login`, `bot_name`, `owner_login`. For a GitHub App, `bot_login` is `<app-slug>[bot]`; people still type `@<app-slug>` to wake it (override with `mention`).
+   - `app` (GitHub App only): `dir` holds the app's key on the Hermes host, `push` lists `user@host:/path` targets that get a fresh token copy (your terminal backend, at `agent_token_path`)
    - `hermes`: ssh host and key for the Hermes host, and the public webhook base URL
    - `gate.token_file`: where the bot token lives **on the Hermes host**
    - `agent_token_path`: where the bot token lives **on the terminal backend** the agent uses (can be a different machine)
    - `routes`: one per Hermes profile you want. `profile: null` is the default profile. `opus_subagent: true` adds the delegation toolset; also set `delegation.model` in that profile's Hermes config.
    - `repos`: which repo goes to which route
-2. Put the bot token in both places and lock it down (`chmod 600`).
+2. Get a bot token:
+   - **GitHub App:** on the Hermes host, run the one-click setup, open the printed link in a browser signed in to GitHub, click **Create GitHub App**, then pick your repos:
+     ```bash
+     python3 deploy/app_setup.py --name your-bot --public-url http://your-hermes-host:8645 --app-dir /root/.config/gh-app
+     ```
+     The private key goes straight from GitHub to the host. `install.sh` then adds a systemd timer that mints a new installation token every 30 minutes and pushes it to `agent_token_path`. Apps can't be assigned issues or requested as reviewers, so wake them by mention.
+   - **Bot account:** put its token in both places and lock it down (`chmod 600`).
 3. Ship it and restart the gateway once:
    ```bash
    deploy/install.sh --routes
@@ -153,7 +162,7 @@ deploy/install.sh
 # ship a route or prompt change, then restart the gateway from a separate shell
 deploy/install.sh --routes
 
-# add a repo: invite the bot with write access, add it to "repos" in config.json, then
+# add a repo: install the app on it (or invite the bot account with write access), add it to "repos" in config.json, then
 deploy/github_hooks.sh owner/repo
 
 # watch routing decisions on the Hermes host
