@@ -21,7 +21,7 @@ class BuildRouteTests(unittest.TestCase):
     def test_owner_filter_and_identity(self):
         r = routes.build_route(EXAMPLE, {"profile": None, "opus_subagent": False}, "s3cret")
         self.assertEqual(r["filters"], [{"field": "sender.login", "equals": "your-github-login"}])
-        self.assertIn("as user your-bot-account", r["prompt"])
+        self.assertIn("as user your-app-slug[bot]", r["prompt"])
         self.assertIn(EXAMPLE["agent_token_path"], r["prompt"])
         self.assertNotIn("delegation", r["toolsets"])
         self.assertNotIn("profile", r)

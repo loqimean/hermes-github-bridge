@@ -9,7 +9,7 @@ Configured by hermes_github_gate.json next to this file (see config.example.json
 
 Wakes the bot only when the sender is owner_login and one of:
   - issue or PR assigned to BOT, or review requested from BOT
-  - @<bot_login> (or /hermes) in a comment, inline review comment, review summary, or a new or edited description
+  - @<mention> (or /hermes) in a comment, inline review comment, review summary, or a new or edited description
   - any comment by owner_login in a thread the bot is already part of (assigned, reviewer, or commented before)
 
 Then, in parallel: Haiku writes an instant reply, Jev Router picks the follow-up tier (none, sonnet, opus).
@@ -26,10 +26,11 @@ import urllib.request
 
 CONFIG_FILE = Path(os.environ.get("HERMES_GATE_CONFIG") or Path(__file__).with_name("hermes_github_gate.json"))
 DEFAULTS = {
-    "bot_login": None,            # GitHub login of the bot account
+    "bot_login": None,            # GitHub login of the bot: an account, or a GitHub App's "<slug>[bot]"
+    "mention": None,              # handle people type after @ (default: bot_login without "[bot]")
     "bot_name": "Hermes",         # persona name used in prompts
     "owner_login": None,          # the only user who can wake the bot
-    "token_file": "/root/.config/gh-bot/token",   # bot classic PAT (repo, read:org) on the Hermes host
+    "token_file": "/root/.config/gh-bot/token",   # bot token on the Hermes host (app installation token or PAT)
     "hermes_env": "/root/.hermes/.env",           # holds OPENROUTER_API_KEY
     "router_log": "/root/.hermes/logs/github-router.jsonl",
     "router_model": "typesafe/jev-router",
@@ -38,12 +39,16 @@ DEFAULTS = {
 CFG = {**DEFAULTS, **(json.loads(CONFIG_FILE.read_text()) if CONFIG_FILE.exists() else {})}
 
 BOT = CFG["bot_login"] or ""
+HANDLE = CFG["mention"] or BOT.removesuffix("[bot]")
+# both the configured handle and the bot's real login (as GitHub shows it) wake the bot
+_HANDLES = "|".join(re.escape(h) for h in dict.fromkeys(h for h in (HANDLE, BOT.removesuffix("[bot]")) if h))
 OWNER = CFG["owner_login"] or ""
 NAME = CFG["bot_name"]
 TOKEN_FILE = CFG["token_file"]
 HERMES_ENV = CFG["hermes_env"]
 ROUTER_LOG = CFG["router_log"]
-MENTION = re.compile(rf"(?<![\w-])@{re.escape(BOT)}\b|(?<![\w/])/hermes\b", re.IGNORECASE) if BOT else re.compile(r"(?!x)x")
+MENTION = (re.compile(rf"(?<![\w-])@(?:{_HANDLES})(?:\[bot\])?(?![\w-])|(?<![\w/])/hermes\b", re.IGNORECASE)
+           if _HANDLES else re.compile(r"(?!x)x"))
 ACK_REACTIONS = ("heart", "+1", "hooray")
 
 
@@ -266,7 +271,7 @@ def log_route(ctx: dict, r: dict, dt: float):
         pass
 
 
-OTHER_MENTION = re.compile(rf"(?<![\w-])@(?!{re.escape(BOT)}\b)[A-Za-z0-9][A-Za-z0-9-]*")
+OTHER_MENTION = re.compile(rf"(?<![\w-])@(?!(?:{_HANDLES or '(?!x)x'})(?![\w-]))[A-Za-z0-9][A-Za-z0-9-]*", re.IGNORECASE)
 
 
 def addressed_elsewhere(text: str) -> bool:
