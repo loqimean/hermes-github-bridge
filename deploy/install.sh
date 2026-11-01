@@ -37,11 +37,14 @@ scp -q -i "$KEY" "$ROOT/gate/hermes_github_gate.py" "$TMP/hermes_github_gate.jso
 APP_DIR="$(read_cfg 'c.get("app", {}).get("dir", "")')"
 if [[ -n "$APP_DIR" ]]; then
   TOKEN_FILE="$(read_cfg 'c["gate"]["token_file"]')"
-  PUSH="$(read_cfg '" ".join("--push " + t for t in c["app"].get("push", []))')"
+  # ssh joins remote args with spaces, so pass each push target as its own word (targets contain no spaces)
+  PUSH_TARGETS="$(read_cfg '" ".join(c["app"].get("push", []))')"
   scp -q -i "$KEY" "$ROOT/deploy/app_token.py" "$HOST:/tmp/app_token.py"
-  "${SSH[@]}" bash -s -- "$APP_DIR" "$TOKEN_FILE" "$PUSH" <<'REMOTE'
+  "${SSH[@]}" bash -s -- "$APP_DIR" "$TOKEN_FILE" $PUSH_TARGETS <<'REMOTE'
 set -euo pipefail
-APP_DIR="$1"; TOKEN_FILE="$2"; PUSH="$3"
+APP_DIR="$1"; TOKEN_FILE="$2"; shift 2
+PUSH=""
+for t in "$@"; do PUSH="$PUSH --push $t"; done
 install -d -m700 "$APP_DIR"
 install -m700 /tmp/app_token.py "$APP_DIR/app_token.py"
 cat > /etc/systemd/system/github-app-token.service <<UNIT
